@@ -125,5 +125,11 @@ def ipaToFeat(ipa, featTable, fieldname = "segment"):
     vec = featTable[featTable[fieldname] == seg].drop(fieldname, axis=1).values.flatten().tolist()
     return vec
 
-segs_mst = set(onsets_mst + codas_mst + vowels_mst)
-segs_mst = ipaToFeat
+segs_mst = list(set(onsets_mst + codas_mst + vowels_mst_combined))
+seg_feats_list = list(map(lambda x: ipaToFeat(x, features_phoible, "segment"), segs_mst))
+seg_feats = dict()
+for i, seg in enumerate(segs_mst):
+    seg_feats[seg] = seg_feats_list[i]
+    if seg_feats_list[i] == []:
+        print(seg)
+        
