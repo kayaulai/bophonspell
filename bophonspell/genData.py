@@ -9,11 +9,9 @@ The code for generating some of the data in the data/ folder. Not intended for p
 
 import bophono as bp
 import pandas as pd
-import csv
 import os
 import re
-from weighted_levenshtein import lev, osa, dam_lev
-
+import json
 
 #From shadowtalker: https://stackoverflow.com/questions/21292552/equivalent-of-paste-r-to-python
 from functools import reduce
@@ -28,19 +26,18 @@ def paste(*lists, sep=" ", collapse=None):
     return list(result)
 
 
-syl = "འགྲའ་"
 os.chdir("G:/我的雲端硬碟/1. Current research/bophonspell") #Change to current folder
 
 #Import feature data
 features_phoible = pd.read_csv("data/phonfeatures/phoible-segments-features.tsv", sep='\t') #I have chosen the PHOIBLE features because they are the easiest to use. Another possibility is UPSID features (TBD).
+features_compo = pd.read_csv("data/phonfeatures/component-feature-table.txt", sep=',')
+
 
 #Create the bophono converter
 options = {
   'aspirateLowTones': True
 }
 mstconverter = bp.UnicodeToApi(schema="MST", options = options)
-mstipa = mstconverter.get_api(syl)
-print(mstipa)
 
 #Import the wordlist
 wordlist = pd.read_csv("data/wordlists/general.txt", sep=' ', header = 0)
@@ -93,6 +90,7 @@ def parseIPASyl(syl, vowels, vowel_diac, tones):
     return result
 
 def parseIPAWordMST(word):
+    print(word)
     return [parseIPASylMST(syl) for syl in word.split(".")]
         
 def detectNucWordMST(word):
@@ -102,16 +100,23 @@ def detectNucWordMST(word):
 def getListRE(options):
     return "[" + "|".join(options) + "]"
 
+def findNoSyl(ipa):
+    return len(re.findall("\.", ipa)) + 1
+wordlist_readings = pd.DataFrame({"ipa": homophone_dict.keys(), "nosyl": [findNoSyl(x) for x in homophone_dict.keys()]})
+
 onsets_mst = []
 codas_mst = []
 nonuc_mst = []
 vowels_mst_combined = []
+wordlist_ipa_to_parsed = dict()
+
 for word in homophone_dict.keys():
     if not detectNucWordMST(word):
         #If not all syllables have a nucleus
         nonuc_mst = nonuc_mst + [word]
     elif word not in [""]:
         parsed = parseIPAWordMST(word)
+        wordlist_ipa_to_parsed[word] = parsed
         for syl in parsed:
             if syl[0] not in onsets_mst:
                 onsets_mst = onsets_mst + [syl[0]]
@@ -120,16 +125,114 @@ for word in homophone_dict.keys():
             if syl[3] not in codas_mst:
                 codas_mst = codas_mst + [syl[3]]
 
-def ipaToFeat(ipa, featTable, fieldname = "segment"):
+devoice_cor = {'g̊': 'k', 'ɟ̊': 'c', 'ɖ̥': 'ʈ', 'd̥': 't', 'b̥': 'p', 'd͡z̥': 'dz'}
+
+def ipaToFeat(ipa, segTable, compTable, fieldname = "segment"):
     seg = ipa
-    vec = featTable[featTable[fieldname] == seg].drop(fieldname, axis=1).values.flatten().tolist()
+    vec = getVecFromFeatureTable(seg, segTable, fieldname)
+    if(vec == []):
+        for dev in devoice_cor.keys():
+            seg = seg.replace(dev, devoice_cor[dev])
+        seg = seg.replace("g", "ɡ")
+        seg = seg.replace("͡", "")
+        seg = seg.replace("̊", " ̥")
+        vec = getVecFromFeatureTable(seg, segTable, fieldname)
+    
+    if(vec == []):
+        diacs = [" ̥", "̃", "̚", "ʰ"]
+        curr_diacs = []
+        diac_vecs = []
+        for diac in diacs:
+            if diac in seg:
+                seg = seg.replace(diac, "")
+                curr_diacs = curr_diacs + diacs
+                diac_vecs = diac_vecs + [getVecFromFeatureTable(seg, compTable, fieldname)]
+                
+        base_vec = getVecFromFeatureTable(seg, segTable, fieldname)
+        vec = combine_vecs(base_vec, diac_vecs)
+        
     return vec
 
+def getVecFromFeatureTable(ipa, featTable, fieldname = "segment"):
+    return featTable[featTable[fieldname] == ipa].drop(fieldname, axis=1).values.flatten().tolist()
+
+def combine_vecs(base_vec, diac_vecs):
+    vec = base_vec
+    for diac_vec in diac_vecs:
+        for i in range(1, len(diac_vecs)):
+            if diac_vec[i] != "0":
+                vec[i] = diac_vec[i]
+    return vec
+
+
 segs_mst = list(set(onsets_mst + codas_mst + vowels_mst_combined))
-seg_feats_list = list(map(lambda x: ipaToFeat(x, features_phoible, "segment"), segs_mst))
+segs_mst.remove("")
+segs_mst = segs_mst + ["ʔ"]
+seg_feats_list = list(map(lambda x: ipaToFeat(x, features_phoible, features_compo, "segment"), segs_mst))
 seg_feats = dict()
 for i, seg in enumerate(segs_mst):
     seg_feats[seg] = seg_feats_list[i]
     if seg_feats_list[i] == []:
         print(seg)
-        
+
+            
+            
+def getDistFromVecs(vec1, vec2):
+    diff = 0
+    for i in range(1, len(vec1)):
+        diff += (abs(featValToNum(vec1[i]) - featValToNum(vec2[i])))
+    return diff / len(vec1)
+    
+def featValToNum(val):
+    num = 0
+    if val == "+":
+        num = .5
+    elif val == "-":
+        num = -.5
+    return num
+
+def getDistsFromFeatureDict(featureDict):
+    dists = dict()
+    for seg1 in featureDict.keys():
+        dists[seg1] = dict()
+        for seg2 in featureDict.keys():
+            #print("Distance between: " + seg1 + " and " + seg2)
+            dists[seg1][seg2] = getDistFromVecs(featureDict[seg1], featureDict[seg2])
+            #Dealing with unreleased vs glottal stop
+            if "̚" in seg1:
+                if "̚" in seg2:
+                    dists[seg1][seg2] = dists[seg1][seg2] / 2
+                else:
+                    altDist = getDistFromVecs(featureDict["ʔ"], featureDict[seg2])
+                    dists[seg1][seg2] = (dists[seg1][seg2] + altDist) / 2
+            elif "̚" in seg2:
+                altDist = getDistFromVecs(featureDict["ʔ"], featureDict[seg2])
+                dists[seg1][seg2] = (dists[seg1][seg2] + altDist) / 2
+                
+    return dists
+
+dists = getDistsFromFeatureDict(seg_feats)
+
+#Get indel distance
+dists_df = pd.DataFrame(dists)
+distList = dists_df.values.flatten().tolist()
+indelDist = sum(distList) / len(distList) / 2
+
+noSegs = len(dists)
+dists[""] = dict()
+for seg in dists:
+    dists[seg][""] = indelDist
+    dists[""][seg] = indelDist
+dists[""][""] = 0
+
+dists_df = pd.DataFrame(dists)
+
+#Exports
+dists_df.to_csv("data/mst_dists.csv")
+wordlist_readings.to_csv("data/wordlist_readings_nosyl.csv")
+with open('data/wordlist_ipa_to_parsed.json', 'w') as f:
+    json.dump(wordlist_ipa_to_parsed, f)
+with open('data/homophone_dict.json', 'w') as f:
+    json.dump(homophone_dict, f)
+
+
