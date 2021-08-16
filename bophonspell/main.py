@@ -7,10 +7,13 @@ Created on Sun Jul  4 13:25:39 2021
 
 import bophono as bp
 import pandas as pd
-import csv
 import os
 import re
 import json
+import numpy as np
+from utils import *
+from parse import *
+from dist import *
 #from weighted_levenshtein import lev, osa, dam_lev
 
 #Imports
@@ -19,7 +22,8 @@ wordlist = pd.read_csv("data/wordlists/general.txt", sep=' ', header = 0)
 wordlist.columns = ["bod", "freq"]
 features_compo = pd.read_csv("data/phonfeatures/component-feature-table.txt", sep=',')
 wordlist_readings_nosyl = pd.read_csv("data/wordlist_readings_nosyl.csv", sep=',')
-dists = pd.read_csv("data/mst_dists.csv", sep=',')
+dists = pd.read_csv("data/mst_dists.csv", sep=',', index_col=0)
+dists.rename(columns = {"Unnamed: 78": ''}, index = {np.nan: ''})
 with open('data/wordlist_ipa_to_parsed.json', 'r') as f:
     wordlist_ipa_to_parsed = json.load(f)
 with open('data/homophone_dict.json', 'r') as f:
@@ -27,50 +31,7 @@ with open('data/homophone_dict.json', 'r') as f:
 mstconverter = bp.UnicodeToApi(schema="MST", options = {'aspirateLowTones': True})
 
 
-#Accepts PARSED syllables as input (i.e. vector with four components)
-#For non-tonal varieties, leave third component blank
-#zeroInitialAsGlottal = treat initial zeroes as glottal stops, rather than indel
-#finalRTDivisor = How much to divide when there is final r/l vs no coda
 
-def findNoSyl(ipa):
-    return len(re.findall("\.", ipa)) + 1
-wordlist_readings = pd.DataFrame({"ipa": homophone_dict.keys(), "nosyl": [findNoSyl(x) for x in homophone_dict.keys()]})
-
-def parseIPAWordMST(word):
-    print(word)
-    return [parseIPASylMST(syl) for syl in word.split(".")]
-
-
-
-def getSylDistanceMST(syl1, syl2, dists, weights = [.4, .2, .2, .2], zeroInitialAsGlottal = True, finalRTDivisor = 2):
-    if zeroInitialAsGlottal:
-        if syl1[0] == "":
-            syl1[0] = "ʔ"
-        if syl2[0] == "":
-            syl2[0] = "ʔ"
-    
-    onsetDist = dists[syl1[0]][syl2[0]]
-    nucDist = dists[syl1[1]][syl2[1]]
-    #Tone dist is twice the indel cost
-    toneDist = int(syl1[2] != syl2[2]) * dists[""]["d"] * 2
-    codaDist = dists[syl1[3]][syl2[3]]
-    
-    #r, l, zero should be more similar to each other
-    if syl1[3] in ["r", "l", ""] and syl2[3] in ["r", "l", ""]:
-        codaDist = codaDist / finalRTDivisor
-    
-    return onsetDist * weights[0] + nucDist * weights[1] + toneDist * weights[2] + codaDist * weights[3]    
-
-#Takes PARSED words.
-def getSameLengthWordDist(word1, word2, dists, sylDistFunct, **kwargs):
-    if len(word1) != len(word2):
-        raise Exception("The words must be of the same length.")
-    totalDist = 0
-    for i in range(0, len(word1)):
-        syl1 = word1[i]
-        syl2 = word2[i]
-        totalDist += sylDistFunct(syl1, syl2, dists, **kwargs)
-    return totalDist
 
 def checkSpell(word, wordlist, wordlist_readings_df, wordlist_readings_parsed, parseFunct, homophone_dict, sylDistFunct, bophono_converter, **kwargs):
     if word in wordlist["bod"]:
@@ -103,6 +64,7 @@ def checkSpellMST(word):
 
 checkSpellMST("མཁའ་པ་")
 checkSpellMST("གནམ་ཤིད")
+checkSpellMST("སྐུ་ཅི་")
 
 #TODO:
 #Unexpected segments from bophono
